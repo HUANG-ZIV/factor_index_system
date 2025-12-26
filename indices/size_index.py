@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-動能因子指數
-定義動能指數的設定與因子計算邏輯
+規模因子指數（大型股）
+定義規模指數的設定與因子計算邏輯
 """
 
 import pandas as pd
@@ -9,26 +9,24 @@ import numpy as np
 from .base_index import BaseIndexConfig, BaseIndex
 
 
-class MomentumIndexConfig(BaseIndexConfig):
-    """動能指數設定"""
+class SizeIndexConfig(BaseIndexConfig):
+    """規模指數設定（大型股）"""
     
     # ========== 指數基本資訊 ==========
-    INDEX_NAME = "動能因子指數"
-    INDEX_CODE = "MOMENTUM"
-    BASE_DATE = "2005-01-03"
+    INDEX_NAME = "規模因子指數"
+    INDEX_CODE = "SIZE"
+    BASE_DATE = "2024-01-03"
     BASE_VALUE = 100
     
     # ========== 調倉時程 ==========
-    REBALANCE_FREQ = "M"                    # 月調倉
-    REBALANCE_MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    REBALANCE_FREQ = "Q"                    # 季調倉
+    REBALANCE_MONTHS = [3, 6, 9, 12]
     REVIEW_DAY = "last_business_day"
     EFFECTIVE_DAYS = 5
     
     # ========== 股票池篩選 ==========
-    MARKET_CAP_FILTER = {
-        "method": "top_n",
-        "value": 300
-    }
+    # 不預先篩選，直接從全市場選市值最大的股票
+    MARKET_CAP_FILTER = None
     
     LIQUIDITY_FILTER = {
         "method": "top_percent",
@@ -40,22 +38,17 @@ class MomentumIndexConfig(BaseIndexConfig):
     EXCLUDE_STOCKS = None
     
     # ========== 選股設定 ==========
-    SELECTION_METHOD = "top_percent"
-    TOP_PERCENT = 0.20
-    TOP_N = None
+    SELECTION_METHOD = "top_n"
+    TOP_PERCENT = None
+    TOP_N = 50                              # 市值前 50 大
     
     # ========== 權重設定 ==========
-    WEIGHTING_METHOD = "equal"              # 等權重
-    WEIGHT_CAP = 0.05
+    WEIGHTING_METHOD = "market_cap"         # 市值加權
+    WEIGHT_CAP = 0.30                       # 單一股票上限 30%
     WEIGHT_FLOOR = None
     MIXED_WEIGHT_ALPHA = 0.5
     
-    # ========== 動能設定 ==========
-    # 12-1 動能：過去 12 個月報酬，排除近 1 個月
-    MOMENTUM_LOOKBACK = 252                 # 約 12 個月交易日
-    MOMENTUM_SKIP = 21                      # 排除近 1 個月
-    
-    # ========== 因子設定（動能不使用檔案，自行計算）==========
+    # ========== 因子設定 ==========
     FACTORS = {}
     
     # ========== 標準化設定 ==========
@@ -64,85 +57,67 @@ class MomentumIndexConfig(BaseIndexConfig):
     WINSORIZE_LIMITS = (0.01, 0.99)
 
 
-class MomentumIndex(BaseIndex):
-    """動能因子指數"""
+class SizeIndex(BaseIndex):
+    """規模因子指數（大型股）"""
     
-    config = MomentumIndexConfig
+    config = SizeIndexConfig
     
     def calc_factor_score(self, date):
         """
-        計算動能因子分數
+        計算規模因子分數（市值越大分數越高）
         
         Args:
             date: 計算日期
             
         Returns:
-            pd.Series: 股票代碼為索引，動能分數為值
+            pd.Series: 股票代碼為索引，規模分數為值
         """
         date = pd.to_datetime(date)
         
-        # 計算 12-1 動能
-        momentum = self._calc_momentum(
-            date, 
-            lookback=self.config.MOMENTUM_LOOKBACK,
-            skip=self.config.MOMENTUM_SKIP
-        )
+        # 取得市值
+        market_cap = self.data_manager.get_market_cap(date)
         
-        if len(momentum) == 0:
+        if market_cap is None or len(market_cap) == 0:
             return pd.Series(dtype=float)
         
-        # 標準化
-        standardized = self._standardize(momentum)
+        # 移除無效值
+        market_cap = market_cap.dropna()
+        market_cap = market_cap[market_cap > 0]
+        
+        if len(market_cap) == 0:
+            return pd.Series(dtype=float)
+        
+        # 標準化（市值越大分數越高）
+        standardized = self._standardize(market_cap)
         
         return standardized
     
-    def _calc_momentum(self, date, lookback, skip=0):
+    def calc_weights(self, stocks, date, factor_scores=None):
         """
-        計算動能（過去 N 日報酬率，排除近 M 日）
+        計算權重（市值加權）
         
         Args:
-            date: 計算日期
-            lookback: 回溯天數
-            skip: 排除近期天數
+            stocks: 成分股列表
+            date: 日期
+            factor_scores: 因子分數（未使用）
             
         Returns:
-            pd.Series: 股票代碼為索引，動能為值
+            pd.Series: 股票代碼為索引，權重為值
         """
-        date = pd.to_datetime(date)
+        if self.config.WEIGHTING_METHOD != "market_cap":
+            return super().calc_weights(stocks, date, factor_scores)
         
-        # 取得日期索引
-        trading_dates = self.data_manager.trading_dates
+        # 取得市值
+        market_cap = self.data_manager.get_market_cap(date)
+        market_cap = market_cap.reindex(stocks).dropna()
         
-        try:
-            end_idx = trading_dates.get_loc(date)
-        except KeyError:
-            return pd.Series(dtype=float)
+        if len(market_cap) == 0:
+            return self._calc_equal_weights(stocks)
         
-        # 計算區間
-        # 排除近 skip 天
-        momentum_end_idx = end_idx - skip
-        momentum_start_idx = momentum_end_idx - lookback
+        # 計算市值權重
+        weights = market_cap / market_cap.sum()
         
-        if momentum_start_idx < 0 or momentum_end_idx < 0:
-            return pd.Series(dtype=float)
+        # 套用權重上下限
+        weights = self._apply_weight_constraints(weights)
         
-        start_date = trading_dates[momentum_start_idx]
-        end_date = trading_dates[momentum_end_idx]
-        
-        # 取得價格（使用還原價）
-        price_df = self.data_manager.adjusted_price_df
-        
-        if price_df is None:
-            return pd.Series(dtype=float)
-        
-        try:
-            start_price = price_df.loc[start_date]
-            end_price = price_df.loc[end_date]
-        except KeyError:
-            return pd.Series(dtype=float)
-        
-        # 計算報酬率
-        momentum = (end_price - start_price) / start_price
-        momentum = momentum.dropna()
-        
-        return momentum
+        return weights

@@ -22,7 +22,7 @@ from indices import (
     QualityIndex,
     #ValueIndex,
     MomentumIndex,
-    #SizeIndex,
+    SizeIndex,
     DividendIndex,
     LowVolIndex
 )
@@ -33,7 +33,7 @@ INDEX_MAP = {
     "QUALITY": QualityIndex,
     #"VALUE": ValueIndex,
     "MOMENTUM": MomentumIndex,
-    #"SIZE": SizeIndex,
+    "SIZE": SizeIndex,
     "DIVIDEND": DividendIndex,
     "LOWVOL": LowVolIndex
 }
