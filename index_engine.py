@@ -50,7 +50,8 @@ class IndexEngine:
         
         # 待生效投資組合（過渡期間）
         self.pending_stocks = None
-        self.pending_weights = None
+        self.pending_weights = None              # 公告權重（不變）
+        self.pending_weights_drifted = None      # 漂移權重（每日更新）
         self.pending_effective_date = None
     
     def _setup_logger(self):
@@ -137,8 +138,8 @@ class IndexEngine:
         weights = self.index.calc_weights(stocks, start_date, scores)
         
         # 設定當前投組
-        self.current_stocks = stocks
-        self.current_weights = weights
+        self.current_stocks = list(stocks)
+        self.current_weights = weights.copy()
         
         # 設定基準值
         self.price_index_series[start_date] = self.config.BASE_VALUE
@@ -162,13 +163,13 @@ class IndexEngine:
         Args:
             date: 交易日期
         """
+        # 檢查是否為生效日，需要在計算前切換投組
+        if self._is_effective_date(date):
+            self._switch_portfolio(date)
+        
         # 檢查是否為調整日
         if self._is_review_date(date):
             self._process_review(date)
-        
-        # 檢查是否需要切換投組（生效日前一天收盤後）
-        if self._should_switch_portfolio(date):
-            self._switch_portfolio(date)
         
         # 計算當日指數（跳過基準日）
         if date not in self.price_index_series:
@@ -269,30 +270,18 @@ class IndexEngine:
                 return True
         return False
     
+    def _is_effective_date(self, date):
+        """判斷是否為生效日"""
+        if self.pending_effective_date is None:
+            return False
+        return date == self.pending_effective_date
+    
     def _get_effective_date_for_review(self, review_date):
         """取得調整日對應的生效日"""
         for r_date, e_date in self.rebalance_schedule:
             if r_date == review_date:
                 return e_date
         return None
-    
-    def _should_switch_portfolio(self, date):
-        """
-        判斷是否應該切換投組（生效日前一天收盤後）
-        
-        Args:
-            date: 當前日期
-            
-        Returns:
-            bool
-        """
-        if self.pending_effective_date is None:
-            return False
-        
-        # 生效日的前一個交易日
-        prev_date = self.data_manager.get_previous_trading_date(self.pending_effective_date)
-        
-        return date == prev_date
     
     def _is_in_transition(self, date):
         """判斷是否在過渡期"""
@@ -327,8 +316,9 @@ class IndexEngine:
             return
         
         # 設定待生效投組
-        self.pending_stocks = stocks
+        self.pending_stocks = list(stocks)
         self.pending_weights = weights.copy()
+        self.pending_weights_drifted = weights.copy()  # 初始化漂移權重
         self.pending_effective_date = effective_date
         
         # 記錄調倉
@@ -352,7 +342,7 @@ class IndexEngine:
         record = {
             "review_date": review_date,
             "effective_date": effective_date,
-            "stocks": stocks,
+            "stocks": list(stocks),
             "weights": weights.copy(),
             "factor_scores": factor_scores.copy() if isinstance(factor_scores, pd.Series) else factor_scores,
             "rejected": rejected,
@@ -385,58 +375,25 @@ class IndexEngine:
     
     def _switch_portfolio(self, date):
         """
-        切換投資組合（生效日前一天收盤後）
+        切換投資組合（生效日當天開盤前）
         
         Args:
-            date: 當前日期（生效日前一天）
+            date: 生效日
         """
         if self.pending_stocks is None:
             return
         
-        self.logger.info(f"切換投組: {date.strftime('%Y-%m-%d')} 收盤後")
+        self.logger.info(f"切換投組: {date.strftime('%Y-%m-%d')} 開盤（生效日）")
         
-        # 計算新投組在過渡期間的權重漂移
-        drifted_weights = self._calc_drifted_pending_weights(date)
-        
-        # 切換
-        self.current_stocks = self.pending_stocks
-        self.current_weights = drifted_weights
+        # 使用漂移後的權重（而非公告權重）
+        self.current_stocks = list(self.pending_stocks)
+        self.current_weights = self.pending_weights_drifted.copy()
         
         # 清除待生效
         self.pending_stocks = None
         self.pending_weights = None
+        self.pending_weights_drifted = None
         self.pending_effective_date = None
-    
-    def _calc_drifted_pending_weights(self, date):
-        """
-        計算待生效投組的漂移權重
-        
-        Args:
-            date: 當前日期
-            
-        Returns:
-            pd.Series: 漂移後權重
-        """
-        if self.pending_weights is None:
-            return pd.Series(dtype=float)
-        
-        weights = self.pending_weights.copy()
-        stocks = list(weights.index)
-        
-        # 取得當日報酬
-        returns = self.data_manager.get_price_return(date, stocks, use_adjusted=False)
-        returns = returns.reindex(stocks).fillna(0)
-        
-        # 計算漂移
-        new_values = weights * (1 + returns)
-        total_value = new_values.sum()
-        
-        if total_value > 0:
-            drifted = new_values / total_value
-        else:
-            drifted = weights
-        
-        return drifted
     
     # ========== 每日計算 ==========
     
@@ -457,7 +414,13 @@ class IndexEngine:
             return
         
         # 取得前一日權重
-        prev_weights = self.daily_weights.get(prev_date, self.current_weights)
+        if prev_date in self.daily_weights:
+            prev_weights = self.daily_weights[prev_date]
+            # 如果成分股不同，使用當前權重
+            if set(prev_weights.index) != set(stocks):
+                prev_weights = self.current_weights
+        else:
+            prev_weights = self.current_weights
         
         # 計算報酬
         price_return, dividend_return, contributions = self._calc_portfolio_return(date, prev_weights)
@@ -469,7 +432,7 @@ class IndexEngine:
         self.price_index_series[date] = prev_price_index * (1 + price_return)
         self.total_return_index_series[date] = prev_tr_index * (1 + price_return + dividend_return)
         
-        # 計算權重漂移
+        # 計算當前投組的權重漂移
         drifted_weights = self._calc_drifted_weights(date, prev_weights)
         
         # 記錄每日資料
@@ -481,9 +444,33 @@ class IndexEngine:
         # 更新當前權重
         self.current_weights = drifted_weights
         
-        # 更新過渡期資料
+        # 更新過渡期資料（包含新投組的漂移）
         if self._is_in_transition(date):
-            self._update_transition_data(date, prev_weights, drifted_weights)
+            self._update_pending_weights_drift(date)
+            self._update_transition_data(date, drifted_weights)
+    
+    def _update_pending_weights_drift(self, date):
+        """
+        更新待生效投組的漂移權重
+        
+        Args:
+            date: 當前日期
+        """
+        if self.pending_weights_drifted is None:
+            return
+        
+        stocks = list(self.pending_weights_drifted.index)
+        
+        # 取得日報酬
+        returns = self.data_manager.get_price_return(date, stocks, use_adjusted=False)
+        returns = returns.reindex(stocks).fillna(0)
+        
+        # 計算漂移
+        new_values = self.pending_weights_drifted * (1 + returns)
+        total_value = new_values.sum()
+        
+        if total_value > 0:
+            self.pending_weights_drifted = new_values / total_value
     
     def _calc_portfolio_return(self, date, weights):
         """
@@ -575,11 +562,17 @@ class IndexEngine:
         
         return drifted
     
-    def _update_transition_data(self, date, old_weights, new_weights):
-        """記錄過渡期權重資料"""
+    def _update_transition_data(self, date, old_weights):
+        """
+        記錄過渡期權重資料
+        
+        Args:
+            date: 當前日期
+            old_weights: 當前投組的漂移權重
+        """
         self.transition_data[date] = {
             "old_portfolio": old_weights.copy(),
-            "new_portfolio": self.pending_weights.copy() if self.pending_weights is not None else None
+            "new_portfolio": self.pending_weights_drifted.copy() if self.pending_weights_drifted is not None else None
         }
     
     # ========== 結果彙整 ==========
