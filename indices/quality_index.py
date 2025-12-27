@@ -15,7 +15,7 @@ class QualityIndexConfig(BaseIndexConfig):
     # ========== 指數基本資訊 ==========
     INDEX_NAME = "品質因子指數"
     INDEX_CODE = "QUALITY"
-    BASE_DATE = "2005-01-03"
+    BASE_DATE = "2024-01-03"
     BASE_VALUE = 100
     
     # ========== 調倉時程 ==========
@@ -40,12 +40,12 @@ class QualityIndexConfig(BaseIndexConfig):
     EXCLUDE_STOCKS = None                   # 不排除特定股票
     
     # ========== 選股設定 ==========
-    SELECTION_METHOD = "top_percent"        # 選前 N%
-    TOP_PERCENT = 0.20                      # 前 20%
-    TOP_N = None
+    SELECTION_METHOD = "top_n"              # 選前 N 檔
+    TOP_PERCENT = None
+    TOP_N = 50                              # 前 50 檔
     
     # ========== 權重設定 ==========
-    WEIGHTING_METHOD = "market_cap"         # 市值加權
+    WEIGHTING_METHOD = "factor"             # 因子加權
     WEIGHT_CAP = 0.10                       # 單檔上限 10%
     WEIGHT_FLOOR = None                     # 無下限
     MIXED_WEIGHT_ALPHA = 0.5
@@ -54,21 +54,26 @@ class QualityIndexConfig(BaseIndexConfig):
     FACTORS = {
         "roe": {
             "file": "稅後權益報酬率.csv",
-            "weight": 0.30,
+            "weight": 0.20,
             "direction": 1                  # 越高越好
         },
         "gross_margin": {
             "file": "毛利率.csv",
-            "weight": 0.25,
+            "weight": 0.20,
             "direction": 1
         },
         "operating_margin": {
             "file": "營業利益率.csv",
-            "weight": 0.25,
+            "weight": 0.20,
             "direction": 1
         },
         "debt_ratio": {
             "file": "負債比率.csv",
+            "weight": 0.20,
+            "direction": -1                 # 越低越好
+        },
+        "leverage_ratio": {
+            "file": "槓桿比率.csv",
             "weight": 0.20,
             "direction": -1                 # 越低越好
         }

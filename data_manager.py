@@ -284,6 +284,8 @@ class DataManager:
         """
         取得因子資料（處理季頻資料對齊）
         
+        對於季頻資料，會自動向前找最近一期的資料。
+        
         Args:
             factor_file: 因子資料檔案名稱
             date: 資料日期
@@ -297,13 +299,14 @@ class DataManager:
         
         date = pd.to_datetime(date)
         
-        # 檢查是否為日頻或季頻資料
-        if len(df) < 50:  # 假設季頻資料列數較少
-            # 季頻資料：找最近一期已公布的資料（避免前視偏誤）
-            # 假設財報公布有 1 個月延遲
-            available_dates = df.index[df.index <= date - pd.Timedelta(days=30)]
+        # 檢查是否為日頻或季頻資料（假設季頻資料列數較少）
+        if len(df) < 100:
+            # 季頻資料：找 date 當天或之前最近一筆資料
+            available_dates = df.index[df.index <= date]
+            
             if len(available_dates) == 0:
                 return pd.Series(dtype=float)
+            
             latest_date = available_dates[-1]
             return df.loc[latest_date]
         else:
