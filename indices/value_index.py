@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-動能因子指數
-定義動能指數的設定與因子計算邏輯
+價值因子指數
+定義價值指數的設定與因子計算邏輯
 """
 
 import pandas as pd
@@ -9,18 +9,18 @@ import numpy as np
 from .base_index import BaseIndexConfig, BaseIndex
 
 
-class MomentumIndexConfig(BaseIndexConfig):
-    """動能指數設定"""
+class ValueIndexConfig(BaseIndexConfig):
+    """價值指數設定"""
     
     # ========== 指數基本資訊 ==========
-    INDEX_NAME = "動能因子指數"
-    INDEX_CODE = "MOMENTUM"
-    BASE_DATE = "2005-01-03"
+    INDEX_NAME = "價值因子指數"
+    INDEX_CODE = "VALUE"
+    BASE_DATE = "2024-01-03"
     BASE_VALUE = 100
     
     # ========== 調倉時程 ==========
-    REBALANCE_FREQ = "M"                    # 月調倉
-    REBALANCE_MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    REBALANCE_FREQ = "Q"                    # 季調倉
+    REBALANCE_MONTHS = [3, 6, 9, 12]
     REVIEW_DAY = "last_business_day"
     EFFECTIVE_DAYS = 5
     
@@ -40,23 +40,35 @@ class MomentumIndexConfig(BaseIndexConfig):
     EXCLUDE_STOCKS = None
     
     # ========== 選股設定 ==========
-    SELECTION_METHOD = "top_percent"
-    TOP_PERCENT = 0.20
-    TOP_N = None
+    SELECTION_METHOD = "top_n"              # 選前 N 檔
+    TOP_PERCENT = None
+    TOP_N = 50                              # 前 50 檔
     
     # ========== 權重設定 ==========
-    WEIGHTING_METHOD = "equal"              # 等權重
-    WEIGHT_CAP = 0.05
+    WEIGHTING_METHOD = "factor"             # 因子加權
+    WEIGHT_CAP = 0.10                       # 單檔上限 10%
     WEIGHT_FLOOR = None
     MIXED_WEIGHT_ALPHA = 0.5
     
-    # ========== 動能設定 ==========
-    # 12-1 動能：過去 12 個月報酬，排除近 1 個月
-    MOMENTUM_LOOKBACK = 252                 # 約 12 個月交易日
-    MOMENTUM_SKIP = 21                      # 排除近 1 個月
-    
-    # ========== 因子設定（動能不使用檔案，自行計算）==========
-    FACTORS = {}
+    # ========== 因子設定 ==========
+    # 三個因子等權重，都是越低越好（direction = -1）
+    FACTORS = {
+        "pe_ratio": {
+            "file": "本益比.csv",
+            "weight": 1/3,
+            "direction": -1               # 低本益比較好
+        },
+        "pb_ratio": {
+            "file": "股價淨值比.csv",
+            "weight": 1/3,
+            "direction": -1               # 低股價淨值比較好
+        },
+        "leverage": {
+            "file": "槓桿比率.csv",
+            "weight": 1/3,
+            "direction": -1               # 低槓桿較好
+        }
+    }
     
     # ========== 標準化設定 ==========
     STANDARDIZE_METHOD = "percentile"
@@ -64,85 +76,19 @@ class MomentumIndexConfig(BaseIndexConfig):
     WINSORIZE_LIMITS = (0.01, 0.99)
 
 
-class MomentumIndex(BaseIndex):
-    """動能因子指數"""
+class ValueIndex(BaseIndex):
+    """價值因子指數"""
     
-    config = MomentumIndexConfig
+    config = ValueIndexConfig
     
     def calc_factor_score(self, date):
         """
-        計算動能因子分數
+        計算價值因子綜合分數
         
         Args:
             date: 計算日期
             
         Returns:
-            pd.Series: 股票代碼為索引，動能分數為值
+            pd.Series: 股票代碼為索引，價值分數為值
         """
-        date = pd.to_datetime(date)
-        
-        # 計算 12-1 動能
-        momentum = self._calc_momentum(
-            date, 
-            lookback=self.config.MOMENTUM_LOOKBACK,
-            skip=self.config.MOMENTUM_SKIP
-        )
-        
-        if len(momentum) == 0:
-            return pd.Series(dtype=float)
-        
-        # 標準化
-        standardized = self._standardize(momentum)
-        
-        return standardized
-    
-    def _calc_momentum(self, date, lookback, skip=0):
-        """
-        計算動能（過去 N 日報酬率，排除近 M 日）
-        
-        Args:
-            date: 計算日期
-            lookback: 回溯天數
-            skip: 排除近期天數
-            
-        Returns:
-            pd.Series: 股票代碼為索引，動能為值
-        """
-        date = pd.to_datetime(date)
-        
-        # 取得日期索引
-        trading_dates = self.data_manager.trading_dates
-        
-        try:
-            end_idx = trading_dates.get_loc(date)
-        except KeyError:
-            return pd.Series(dtype=float)
-        
-        # 計算區間
-        # 排除近 skip 天
-        momentum_end_idx = end_idx - skip
-        momentum_start_idx = momentum_end_idx - lookback
-        
-        if momentum_start_idx < 0 or momentum_end_idx < 0:
-            return pd.Series(dtype=float)
-        
-        start_date = trading_dates[momentum_start_idx]
-        end_date = trading_dates[momentum_end_idx]
-        
-        # 取得價格（使用還原價）
-        price_df = self.data_manager.adjusted_price_df
-        
-        if price_df is None:
-            return pd.Series(dtype=float)
-        
-        try:
-            start_price = price_df.loc[start_date]
-            end_price = price_df.loc[end_date]
-        except KeyError:
-            return pd.Series(dtype=float)
-        
-        # 計算報酬率
-        momentum = (end_price - start_price) / start_price
-        momentum = momentum.dropna()
-        
-        return momentum
+        return self._calc_composite_score(date)

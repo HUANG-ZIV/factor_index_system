@@ -20,7 +20,7 @@ from output_manager import OutputManager
 # 匯入所有指數
 from indices import (
     QualityIndex,
-    #ValueIndex,
+    ValueIndex,
     MomentumIndex,
     SizeIndex,
     DividendIndex,
@@ -31,7 +31,7 @@ from indices import (
 # 指數對照表
 INDEX_MAP = {
     "QUALITY": QualityIndex,
-    #"VALUE": ValueIndex,
+    "VALUE": ValueIndex,
     "MOMENTUM": MomentumIndex,
     "SIZE": SizeIndex,
     "DIVIDEND": DividendIndex,
