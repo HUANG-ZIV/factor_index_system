@@ -3,7 +3,6 @@
 資料管理模組
 負責讀取、清洗、提供資料
 """
-
 import pandas as pd
 import numpy as np
 import os
@@ -29,7 +28,14 @@ class DataManager:
         self.adjusted_price_df = None
         self.volume_df = None
         self.market_cap_df = None
-        self.dividend_df = None
+        
+        # 股利與除權息資料
+        self.cash_dividend_df = None      # 現金股利
+        self.stock_dividend_df = None     # 股票股利
+        self.split_ratio_df = None        # 股票分割比例
+        
+        # 向後兼容
+        self.dividend_df = None           # 現金股利（別名）
         
         # 產業分類
         self.sector_df = None
@@ -68,6 +74,7 @@ class DataManager:
         self._build_trading_calendar()
         
         self.logger.info("資料載入完成")
+        self._validate_data()
     
     def _load_csv(self, filepath, name=""):
         """
@@ -125,9 +132,19 @@ class DataManager:
         self.market_cap_df = self._load_csv(filepath, "總市值")
     
     def _load_dividend_data(self):
-        """載入股利資料"""
-        filepath = os.path.join(self.data_root, "現金股利合計.csv")
-        self.dividend_df = self._load_csv(filepath, "現金股利")
+        """載入股利與除權息資料"""
+        # 現金股利
+        filepath = os.path.join(self.data_root, CASH_DIVIDEND_FILE)
+        self.cash_dividend_df = self._load_csv(filepath, "現金股利")
+        self.dividend_df = self.cash_dividend_df  # 向後兼容
+        
+        # 股票股利
+        filepath = os.path.join(self.data_root, STOCK_DIVIDEND_FILE)
+        self.stock_dividend_df = self._load_csv(filepath, "股票股利")
+        
+        # 股票分割比例
+        filepath = os.path.join(self.data_root, SPLIT_RATIO_FILE)
+        self.split_ratio_df = self._load_csv(filepath, "股票面額異動")
     
     def _load_sector_data(self):
         """載入產業分類資料"""
@@ -154,6 +171,24 @@ class DataManager:
         else:
             self.trading_dates = pd.DatetimeIndex([])
             self.logger.warning("無法建立交易日曆")
+    
+    def _validate_data(self):
+        """驗證資料完整性"""
+        self.logger.info("=== 資料驗證結果 ===")
+        checks = {
+            "close_price": self.close_price_df is not None,
+            "adjusted_price": self.adjusted_price_df is not None,
+            "volume": self.volume_df is not None,
+            "market_cap": self.market_cap_df is not None,
+            "cash_dividend": self.cash_dividend_df is not None,
+            "stock_dividend": self.stock_dividend_df is not None,
+            "split_ratio": self.split_ratio_df is not None,
+            "sector": self.sector_df is not None,
+            "trading_dates": len(self.trading_dates) > 0
+        }
+        for name, ok in checks.items():
+            status = "✓" if ok else "✗"
+            self.logger.info(f"  {status} {name}")
     
     def _load_factor_file(self, factor_file):
         """
@@ -315,7 +350,7 @@ class DataManager:
     
     def get_dividend(self, date, stocks=None):
         """
-        取得股利資料（除息日當天的股利）
+        取得現金股利（除息日當天的股利）
         
         Args:
             date: 日期
@@ -324,13 +359,66 @@ class DataManager:
         Returns:
             pd.Series: 股票代碼為索引，股利為值（無除息則為 0）
         """
-        if self.dividend_df is None:
+        return self.get_cash_dividend(date, stocks)
+    
+    def get_cash_dividend(self, date, stocks=None):
+        """
+        取得現金股利（除息日當天的股利）
+        
+        Args:
+            date: 日期
+            stocks: 股票列表，None 則回傳所有股票
+            
+        Returns:
+            pd.Series: 股票代碼為索引，現金股利為值（無除息則為 0）
+        """
+        if self.cash_dividend_df is None:
             return pd.Series(dtype=float)
         
-        data = self._get_data_at_date(self.dividend_df, date, stocks)
-        
-        # 將 NaN 替換為 0（無除息）
+        data = self._get_data_at_date(self.cash_dividend_df, date, stocks)
         return data.fillna(0)
+    
+    def get_stock_dividend(self, date, stocks=None):
+        """
+        取得股票股利（除權日當天的股票股利）
+        
+        Args:
+            date: 日期
+            stocks: 股票列表，None 則回傳所有股票
+            
+        Returns:
+            pd.Series: 股票代碼為索引，股票股利（元）為值（無除權則為 0）
+        """
+        if self.stock_dividend_df is None:
+            return pd.Series(dtype=float)
+        
+        data = self._get_data_at_date(self.stock_dividend_df, date, stocks)
+        return data.fillna(0)
+    
+    def get_split_ratio(self, date, stocks=None):
+        """
+        取得股票分割比例（面額異動日當天的分割比例）
+        
+        Args:
+            date: 日期
+            stocks: 股票列表，None 則回傳所有股票
+            
+        Returns:
+            pd.Series: 股票代碼為索引，分割比例為值（無分割則為 1）
+        """
+        if self.split_ratio_df is None:
+            if stocks is not None:
+                return pd.Series(1.0, index=[str(s) for s in stocks])
+            return pd.Series(dtype=float)
+        
+        data = self._get_data_at_date(self.split_ratio_df, date, stocks)
+        # 無分割的股票設為 1
+        data = data.fillna(1)
+        # 確保所有股票都有值
+        if stocks is not None:
+            stocks = [str(s) for s in stocks]
+            data = data.reindex(stocks, fill_value=1)
+        return data
     
     def get_all_stocks(self):
         """
@@ -547,33 +635,21 @@ class DataManager:
             data = data.reindex(stocks)
         
         return data
-    
     def validate_data(self):
         """
-        驗證資料完整性
+        驗證資料完整性（公開方法）
         
         Returns:
             dict: 驗證結果
         """
-        results = {
+        return {
             "close_price": self.close_price_df is not None,
             "adjusted_price": self.adjusted_price_df is not None,
             "volume": self.volume_df is not None,
             "market_cap": self.market_cap_df is not None,
-            "dividend": self.dividend_df is not None,
+            "cash_dividend": self.cash_dividend_df is not None,
+            "stock_dividend": self.stock_dividend_df is not None,
+            "split_ratio": self.split_ratio_df is not None,
             "sector": self.sector_df is not None,
             "trading_dates": len(self.trading_dates) > 0
         }
-        
-        self.logger.info("=== 資料驗證結果 ===")
-        for key, value in results.items():
-            status = "✓" if value else "✗"
-            self.logger.info(f"  {status} {key}")
-        
-        return results
-
-
-# 測試用
-if __name__ == "__main__":
-    dm = DataManager()
-    dm.validate_data()

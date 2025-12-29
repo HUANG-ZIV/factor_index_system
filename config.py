@@ -3,7 +3,6 @@
 全域設定檔
 定義資料路徑、交易日曆等所有指數共用的參數
 """
-
 import os
 import logging
 
@@ -18,6 +17,11 @@ CLOSE_PRICE_FILE = "收盤價.csv"
 ADJUSTED_CLOSE_FILE = "收盤價_還原.csv"
 VOLUME_FILE = "成交量.csv"
 MARKET_CAP_FILE = "總市值.csv"
+
+# 股利與除權息資料
+CASH_DIVIDEND_FILE = "現金股利合計.csv"
+STOCK_DIVIDEND_FILE = "股票股利合計.csv"
+SPLIT_RATIO_FILE = "股票面額異動.csv"
 
 # ========== 輸出路徑設定 ==========
 OUTPUT_ROOT = "./output"

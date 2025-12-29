@@ -2,6 +2,11 @@
 """
 指數計算引擎
 執行指數計算的核心邏輯
+
+支援：
+- 現金股利（除息）
+- 股票股利（除權）
+- 股票分割（面額異動）
 """
 
 import pandas as pd
@@ -422,17 +427,17 @@ class IndexEngine:
         else:
             prev_weights = self.current_weights
         
-        # 計算報酬
-        price_return, dividend_return, contributions = self._calc_portfolio_return(date, prev_weights)
+        # 計算報酬（含除息、除權、分割調整）
+        price_return, total_dividend_return, contributions = self._calc_portfolio_return(date, prev_weights)
         
         # 更新指數
         prev_price_index = self.price_index_series[prev_date]
         prev_tr_index = self.total_return_index_series[prev_date]
         
         self.price_index_series[date] = prev_price_index * (1 + price_return)
-        self.total_return_index_series[date] = prev_tr_index * (1 + price_return + dividend_return)
+        self.total_return_index_series[date] = prev_tr_index * (1 + price_return + total_dividend_return)
         
-        # 計算當前投組的權重漂移
+        # 計算當前投組的權重漂移（含除息、除權、分割調整）
         drifted_weights = self._calc_drifted_weights(date, prev_weights)
         
         # 記錄每日資料
@@ -461,12 +466,11 @@ class IndexEngine:
         
         stocks = list(self.pending_weights_drifted.index)
         
-        # 取得日報酬
-        returns = self.data_manager.get_price_return(date, stocks, use_adjusted=False)
-        returns = returns.reindex(stocks).fillna(0)
+        # 計算調整後的總報酬率（用於權重漂移）
+        adjusted_returns = self._calc_adjusted_total_return(date, stocks)
         
         # 計算漂移
-        new_values = self.pending_weights_drifted * (1 + returns)
+        new_values = self.pending_weights_drifted * (1 + adjusted_returns)
         total_value = new_values.sum()
         
         if total_value > 0:
@@ -476,45 +480,65 @@ class IndexEngine:
         """
         計算投資組合報酬
         
+        包含：價格報酬、現金股利報酬、股票股利報酬
+        已處理股票分割
+        
         Args:
             date: 當前日期
             weights: 前一日權重
             
         Returns:
-            tuple: (價格報酬, 股息報酬, 各股票貢獻)
+            tuple: (價格報酬, 總股利報酬, 各股票貢獻)
         """
         stocks = list(weights.index)
+        prev_date = self.data_manager.get_previous_trading_date(date)
         
-        # 取得日報酬（使用收盤價計算，不含股息）
-        returns = self.data_manager.get_price_return(date, stocks, use_adjusted=False)
-        returns = returns.reindex(stocks).fillna(0)
+        # 取得分割比例
+        split_ratios = self.data_manager.get_split_ratio(date, stocks)
+        split_ratios = split_ratios.reindex(stocks, fill_value=1)
         
-        # 各股票貢獻
-        contributions = weights * returns
+        # 取得價格
+        prices_today = self.data_manager.get_close_price(date, stocks).reindex(stocks)
+        prices_yesterday = self.data_manager.get_close_price(prev_date, stocks).reindex(stocks)
         
-        # 投組報酬
+        # 計算調整後的價格報酬（處理分割）
+        # 分割日：今日股價 × 分割比例 vs 昨日股價
+        adjusted_prices_today = prices_today * split_ratios
+        price_returns = (adjusted_prices_today - prices_yesterday) / prices_yesterday
+        price_returns = price_returns.fillna(0)
+        
+        # 各股票價格貢獻
+        contributions = weights * price_returns
+        
+        # 投組價格報酬
         price_return = contributions.sum()
         
-        # 股息報酬
-        dividend_return = self._calc_dividend_return(date, weights)
+        # 現金股利報酬
+        cash_dividend_return = self._calc_cash_dividend_return(date, weights)
         
-        return price_return, dividend_return, contributions
+        # 股票股利報酬
+        stock_dividend_return = self._calc_stock_dividend_return(date, weights)
+        
+        # 總股利報酬
+        total_dividend_return = cash_dividend_return + stock_dividend_return
+        
+        return price_return, total_dividend_return, contributions
     
-    def _calc_dividend_return(self, date, weights):
+    def _calc_cash_dividend_return(self, date, weights):
         """
-        計算股息報酬
+        計算現金股利報酬
         
         Args:
             date: 當前日期
             weights: 前一日權重
             
         Returns:
-            float: 股息報酬率
+            float: 現金股利報酬率
         """
         stocks = list(weights.index)
         
         # 取得除息日股利
-        dividends = self.data_manager.get_dividend(date, stocks)
+        dividends = self.data_manager.get_cash_dividend(date, stocks)
         dividends = dividends.reindex(stocks).fillna(0)
         
         if dividends.sum() == 0:
@@ -534,9 +558,90 @@ class IndexEngine:
         
         return dividend_return
     
+    def _calc_stock_dividend_return(self, date, weights):
+        """
+        計算股票股利報酬
+        
+        股票股利單位為「元」，配股率 = 股票股利 / 10
+        股票股利報酬 = 配股率（因為配股價值 = 配股率 × 當日股價）
+        
+        Args:
+            date: 當前日期
+            weights: 前一日權重
+            
+        Returns:
+            float: 股票股利報酬率
+        """
+        stocks = list(weights.index)
+        
+        # 取得除權日股票股利
+        stock_dividends = self.data_manager.get_stock_dividend(date, stocks)
+        stock_dividends = stock_dividends.reindex(stocks).fillna(0)
+        
+        if stock_dividends.sum() == 0:
+            return 0.0
+        
+        # 配股率 = 股票股利 / 10（面額）
+        stock_dividend_ratio = stock_dividends / 10
+        
+        # 股票股利報酬 = 加權配股率
+        stock_dividend_return = (weights * stock_dividend_ratio).sum()
+        
+        return stock_dividend_return
+    
+    def _calc_adjusted_total_return(self, date, stocks):
+        """
+        計算調整後的總報酬率（用於權重漂移）
+        
+        總報酬 = 調整後價格報酬 + 現金股利報酬 + 股票股利報酬
+        
+        Args:
+            date: 當前日期
+            stocks: 股票列表
+            
+        Returns:
+            pd.Series: 各股票的總報酬率
+        """
+        prev_date = self.data_manager.get_previous_trading_date(date)
+        stocks = [str(s) for s in stocks]
+        
+        # 取得分割比例
+        split_ratios = self.data_manager.get_split_ratio(date, stocks)
+        split_ratios = split_ratios.reindex(stocks, fill_value=1)
+        
+        # 取得價格
+        prices_today = self.data_manager.get_close_price(date, stocks).reindex(stocks)
+        prices_yesterday = self.data_manager.get_close_price(prev_date, stocks).reindex(stocks)
+        
+        # 調整後價格報酬（處理分割）
+        adjusted_prices_today = prices_today * split_ratios
+        price_returns = (adjusted_prices_today - prices_yesterday) / prices_yesterday
+        price_returns = price_returns.fillna(0)
+        
+        # 現金股利殖利率
+        cash_dividends = self.data_manager.get_cash_dividend(date, stocks).reindex(stocks).fillna(0)
+        cash_yields = cash_dividends / prices_yesterday
+        cash_yields = cash_yields.fillna(0)
+        
+        # 股票股利配股率
+        stock_dividends = self.data_manager.get_stock_dividend(date, stocks).reindex(stocks).fillna(0)
+        stock_dividend_ratio = stock_dividends / 10
+        
+        # 總報酬
+        total_returns = price_returns + cash_yields + stock_dividend_ratio
+        
+        return total_returns
+    
     def _calc_drifted_weights(self, date, prev_weights):
         """
         計算權重漂移
+        
+        權重漂移考慮：
+        1. 價格變動（含分割調整）
+        2. 現金股利再投資
+        3. 股票股利再投資
+        
+        股息按「前一日權重」比例再投資到所有股票
         
         Args:
             date: 當前日期
@@ -546,13 +651,28 @@ class IndexEngine:
             pd.Series: 漂移後權重
         """
         stocks = list(prev_weights.index)
+        prev_date = self.data_manager.get_previous_trading_date(date)
         
-        # 取得日報酬
-        returns = self.data_manager.get_price_return(date, stocks, use_adjusted=False)
-        returns = returns.reindex(stocks).fillna(0)
+        # 取得分割比例
+        split_ratios = self.data_manager.get_split_ratio(date, stocks)
+        split_ratios = split_ratios.reindex(stocks, fill_value=1)
         
-        # 計算漂移
-        new_values = prev_weights * (1 + returns)
+        # 取得價格
+        prices_today = self.data_manager.get_close_price(date, stocks).reindex(stocks)
+        prices_yesterday = self.data_manager.get_close_price(prev_date, stocks).reindex(stocks)
+        
+        # 調整後價格報酬（處理分割）
+        adjusted_prices_today = prices_today * split_ratios
+        price_returns = (adjusted_prices_today - prices_yesterday) / prices_yesterday
+        price_returns = price_returns.fillna(0)
+        
+        # 計算組合的總股利報酬（用於再投資）
+        cash_dividend_return = self._calc_cash_dividend_return(date, prev_weights)
+        stock_dividend_return = self._calc_stock_dividend_return(date, prev_weights)
+        portfolio_dividend_return = cash_dividend_return + stock_dividend_return
+        
+        # 權重漂移：價格變動 + 股利按原權重再投資
+        new_values = prev_weights * (1 + price_returns) + prev_weights * portfolio_dividend_return
         total_value = new_values.sum()
         
         if total_value > 0:
