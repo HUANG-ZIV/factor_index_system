@@ -7,6 +7,10 @@
 - 現金股利（除息）
 - 股票股利（除權）
 - 股票分割（面額異動）
+
+權重漂移公式（用戶指定）：
+- 所有股票的收盤權重 × (1 + 組合現金股息報酬)
+- 只考慮現金股利再投資，不含股票股利
 """
 
 import pandas as pd
@@ -437,7 +441,7 @@ class IndexEngine:
         self.price_index_series[date] = prev_price_index * (1 + price_return)
         self.total_return_index_series[date] = prev_tr_index * (1 + price_return + total_dividend_return)
         
-        # 計算當前投組的權重漂移（含除息、除權、分割調整）
+        # 計算當前投組的權重漂移（使用用戶公式：只考慮現金股利）
         drifted_weights = self._calc_drifted_weights(date, prev_weights)
         
         # 記錄每日資料
@@ -456,7 +460,9 @@ class IndexEngine:
     
     def _update_pending_weights_drift(self, date):
         """
-        更新待生效投組的漂移權重
+        更新待生效投組的漂移權重（使用用戶公式）
+        
+        用戶公式：所有股票的權重 × (1 + 組合現金股息報酬)
         
         Args:
             date: 當前日期
@@ -465,12 +471,36 @@ class IndexEngine:
             return
         
         stocks = list(self.pending_weights_drifted.index)
+        prev_date = self.data_manager.get_previous_trading_date(date)
         
-        # 計算調整後的總報酬率（用於權重漂移）
-        adjusted_returns = self._calc_adjusted_total_return(date, stocks)
+        # 取得分割比例
+        split_ratios = self.data_manager.get_split_ratio(date, stocks)
+        split_ratios = split_ratios.reindex(stocks, fill_value=1)
         
-        # 計算漂移
-        new_values = self.pending_weights_drifted * (1 + adjusted_returns)
+        # 取得價格
+        prices_today = self.data_manager.get_close_price(date, stocks).reindex(stocks)
+        prices_yesterday = self.data_manager.get_close_price(prev_date, stocks).reindex(stocks)
+        
+        # 調整後價格報酬（處理分割）
+        adjusted_prices_today = prices_today * split_ratios
+        price_returns = (adjusted_prices_today - prices_yesterday) / prices_yesterday
+        price_returns = price_returns.fillna(0)
+        
+        # 現金股利殖利率
+        cash_dividends = self.data_manager.get_cash_dividend(date, stocks).reindex(stocks).fillna(0)
+        cash_yields = cash_dividends / prices_yesterday
+        cash_yields = cash_yields.fillna(0)
+        
+        # 計算組合的現金股息報酬（用於再投資）
+        portfolio_cash_dividend_return = (self.pending_weights_drifted * cash_yields).sum()
+        
+        # 用戶公式：所有股票的收盤權重 × (1 + 組合現金股息報酬)
+        # 先計算各股票的收盤價值（除息股要扣除殖利率）
+        closing_values = self.pending_weights_drifted * (1 + price_returns - cash_yields)
+        
+        # 然後乘以 (1 + 組合現金股息報酬) 進行再投資
+        new_values = closing_values * (1 + portfolio_cash_dividend_return)
+        
         total_value = new_values.sum()
         
         if total_value > 0:
@@ -516,7 +546,7 @@ class IndexEngine:
         # 現金股利報酬
         cash_dividend_return = self._calc_cash_dividend_return(date, weights)
         
-        # 股票股利報酬
+        # 股票股利報酬（使用面額計算配股率）
         stock_dividend_return = self._calc_stock_dividend_return(date, weights)
         
         # 總股利報酬
@@ -562,8 +592,8 @@ class IndexEngine:
         """
         計算股票股利報酬
         
-        股票股利單位為「元」，配股率 = 股票股利 / 10
-        股票股利報酬 = 配股率（因為配股價值 = 配股率 × 當日股價）
+        配股率 = 股票股利(元) / 面額
+        股票股利報酬 = 加權配股率
         
         Args:
             date: 當前日期
@@ -581,8 +611,12 @@ class IndexEngine:
         if stock_dividends.sum() == 0:
             return 0.0
         
-        # 配股率 = 股票股利 / 10（面額）
-        stock_dividend_ratio = stock_dividends / 10
+        # 取得面額（根據日期的年份）
+        par_values = self.data_manager.get_par_value(date, stocks)
+        par_values = par_values.reindex(stocks).fillna(10.0)  # 預設面額 10
+        
+        # 配股率 = 股票股利 / 面額
+        stock_dividend_ratio = stock_dividends / par_values
         
         # 股票股利報酬 = 加權配股率
         stock_dividend_return = (weights * stock_dividend_ratio).sum()
@@ -623,9 +657,10 @@ class IndexEngine:
         cash_yields = cash_dividends / prices_yesterday
         cash_yields = cash_yields.fillna(0)
         
-        # 股票股利配股率
+        # 股票股利配股率（使用面額）
         stock_dividends = self.data_manager.get_stock_dividend(date, stocks).reindex(stocks).fillna(0)
-        stock_dividend_ratio = stock_dividends / 10
+        par_values = self.data_manager.get_par_value(date, stocks).reindex(stocks).fillna(10.0)
+        stock_dividend_ratio = stock_dividends / par_values
         
         # 總報酬
         total_returns = price_returns + cash_yields + stock_dividend_ratio
@@ -634,14 +669,13 @@ class IndexEngine:
     
     def _calc_drifted_weights(self, date, prev_weights):
         """
-        計算權重漂移
+        計算權重漂移（使用用戶公式）
         
-        權重漂移考慮：
-        1. 價格變動（含分割調整）
-        2. 現金股利再投資
-        3. 股票股利再投資
+        用戶公式：
+        - 除息股開盤權重 = 再投資前 × (1 + 組合股息報酬)
+        - 其他股開盤權重 = 收盤權重 × (1 + 組合股息報酬)
         
-        股息按「前一日權重」比例再投資到所有股票
+        只考慮現金股利再投資，不含股票股利
         
         Args:
             date: 當前日期
@@ -666,13 +700,23 @@ class IndexEngine:
         price_returns = (adjusted_prices_today - prices_yesterday) / prices_yesterday
         price_returns = price_returns.fillna(0)
         
-        # 計算組合的總股利報酬（用於再投資）
-        cash_dividend_return = self._calc_cash_dividend_return(date, prev_weights)
-        stock_dividend_return = self._calc_stock_dividend_return(date, prev_weights)
-        portfolio_dividend_return = cash_dividend_return + stock_dividend_return
+        # 現金股利殖利率
+        cash_dividends = self.data_manager.get_cash_dividend(date, stocks).reindex(stocks).fillna(0)
+        cash_yields = cash_dividends / prices_yesterday
+        cash_yields = cash_yields.fillna(0)
         
-        # 權重漂移：價格變動 + 股利按原權重再投資
-        new_values = prev_weights * (1 + price_returns) + prev_weights * portfolio_dividend_return
+        # 計算組合的現金股息報酬（用於再投資）
+        portfolio_cash_dividend_return = (prev_weights * cash_yields).sum()
+        
+        # 用戶公式：
+        # 1. 先計算各股票的收盤價值（除息股要扣除殖利率）
+        #    closing_value = prev_weight × (1 + price_return - cash_yield)
+        # 2. 然後乘以 (1 + 組合現金股息報酬) 進行再投資
+        #    new_value = closing_value × (1 + portfolio_cash_dividend_return)
+        
+        closing_values = prev_weights * (1 + price_returns - cash_yields)
+        new_values = closing_values * (1 + portfolio_cash_dividend_return)
+        
         total_value = new_values.sum()
         
         if total_value > 0:

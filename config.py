@@ -22,6 +22,7 @@ MARKET_CAP_FILE = "總市值.csv"
 CASH_DIVIDEND_FILE = "現金股利合計.csv"
 STOCK_DIVIDEND_FILE = "股票股利合計.csv"
 SPLIT_RATIO_FILE = "股票面額異動.csv"
+PAR_VALUE_FILE = "普通股面額.csv"  # 新增：每年面額資料
 
 # ========== 輸出路徑設定 ==========
 OUTPUT_ROOT = "./output"

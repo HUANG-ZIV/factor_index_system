@@ -33,6 +33,7 @@ class DataManager:
         self.cash_dividend_df = None      # 現金股利
         self.stock_dividend_df = None     # 股票股利
         self.split_ratio_df = None        # 股票分割比例
+        self.par_value_df = None          # 普通股面額（年度資料）
         
         # 向後兼容
         self.dividend_df = None           # 現金股利（別名）
@@ -70,6 +71,7 @@ class DataManager:
         self._load_volume_data()
         self._load_market_cap_data()
         self._load_dividend_data()
+        self._load_par_value_data()  # 新增
         self._load_sector_data()
         self._build_trading_calendar()
         
@@ -146,6 +148,32 @@ class DataManager:
         filepath = os.path.join(self.data_root, SPLIT_RATIO_FILE)
         self.split_ratio_df = self._load_csv(filepath, "股票面額異動")
     
+    def _load_par_value_data(self):
+        """載入普通股面額資料（年度資料）"""
+        filepath = os.path.join(self.data_root, PAR_VALUE_FILE)
+        
+        if not os.path.exists(filepath):
+            self.logger.warning(f"普通股面額檔案不存在: {filepath}")
+            self.par_value_df = None
+            return
+        
+        try:
+            df = pd.read_csv(filepath)
+            
+            # date 欄位是年份（整數），轉為索引
+            df['date'] = df['date'].astype(int)
+            df = df.set_index('date')
+            df = df.sort_index()
+            
+            # 欄位名稱轉為字串（股票代碼）
+            df.columns = df.columns.astype(str)
+            
+            self.par_value_df = df
+            self.logger.info(f"載入普通股面額: {len(df)} 年, {len(df.columns)} 檔股票")
+        except Exception as e:
+            self.logger.error(f"載入普通股面額失敗: {e}")
+            self.par_value_df = None
+    
     def _load_sector_data(self):
         """載入產業分類資料"""
         filepath = os.path.join(self.data_root, "產業分類.csv")
@@ -183,6 +211,7 @@ class DataManager:
             "cash_dividend": self.cash_dividend_df is not None,
             "stock_dividend": self.stock_dividend_df is not None,
             "split_ratio": self.split_ratio_df is not None,
+            "par_value": self.par_value_df is not None,
             "sector": self.sector_df is not None,
             "trading_dates": len(self.trading_dates) > 0
         }
@@ -420,6 +449,91 @@ class DataManager:
             data = data.reindex(stocks, fill_value=1)
         return data
     
+    def get_par_value(self, date, stocks=None):
+        """
+        取得普通股面額（考慮分割日期）
+        
+        邏輯：
+        1. 檢查「股票面額異動.csv」是否有該股票的分割紀錄
+        2. 若有分割紀錄：
+           - 除權日 >= 分割日 → 用分割後面額（從普通股面額.csv查該年）
+           - 除權日 < 分割日 → 用分割前面額（從普通股面額.csv查前一年）
+        3. 若無分割紀錄 → 從普通股面額.csv查詢或預設 10
+        
+        Args:
+            date: 日期（除權日）
+            stocks: 股票列表，None 則回傳所有股票
+            
+        Returns:
+            pd.Series: 股票代碼為索引，面額為值（預設為 10）
+        """
+        date = pd.to_datetime(date)
+        
+        if stocks is None:
+            stocks = self.get_all_stocks()
+        stocks = [str(s) for s in stocks]
+        
+        # 預設面額 10
+        result = pd.Series(10.0, index=stocks)
+        
+        for stock in stocks:
+            par_value = self._get_par_value_for_stock(stock, date)
+            result[stock] = par_value
+        
+        return result
+    
+    def _get_par_value_for_stock(self, stock, date):
+        """
+        取得單一股票在指定日期的面額
+        
+        Args:
+            stock: 股票代碼
+            date: 日期（除權日）
+            
+        Returns:
+            float: 面額
+        """
+        stock = str(stock)
+        date = pd.to_datetime(date)
+        year = date.year
+        
+        # 檢查是否有分割紀錄
+        split_date = None
+        if self.split_ratio_df is not None and stock in self.split_ratio_df.columns:
+            stock_splits = self.split_ratio_df[stock].dropna()
+            if len(stock_splits) > 0:
+                # 找該股票所有分割日期中，與 date 同年的分割
+                # 或找最近一次分割
+                for s_date in stock_splits.index:
+                    if s_date.year == year:
+                        split_date = s_date
+                        break
+        
+        # 決定查詢哪一年的面額
+        if split_date is not None:
+            if date >= split_date:
+                # 除權日 >= 分割日 → 用分割後面額（當年）
+                lookup_year = year
+            else:
+                # 除權日 < 分割日 → 用分割前面額（前一年）
+                lookup_year = year - 1
+        else:
+            # 無分割紀錄，直接查當年
+            lookup_year = year
+        
+        # 從普通股面額.csv 查詢
+        if self.par_value_df is not None and stock in self.par_value_df.columns:
+            # 找該年或之前最近一年的面額
+            available_years = self.par_value_df.index[self.par_value_df.index <= lookup_year]
+            if len(available_years) > 0:
+                latest_year = available_years[-1]
+                par = self.par_value_df.loc[latest_year, stock]
+                if pd.notna(par):
+                    return par
+        
+        # 預設面額 10
+        return 10.0
+    
     def get_all_stocks(self):
         """
         取得所有股票代碼
@@ -635,6 +749,7 @@ class DataManager:
             data = data.reindex(stocks)
         
         return data
+
     def validate_data(self):
         """
         驗證資料完整性（公開方法）
@@ -650,6 +765,7 @@ class DataManager:
             "cash_dividend": self.cash_dividend_df is not None,
             "stock_dividend": self.stock_dividend_df is not None,
             "split_ratio": self.split_ratio_df is not None,
+            "par_value": self.par_value_df is not None,
             "sector": self.sector_df is not None,
             "trading_dates": len(self.trading_dates) > 0
         }
