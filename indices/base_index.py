@@ -232,7 +232,7 @@ class BaseIndex(ABC):
         if method == "top_n":
             passed = set(market_cap.head(int(value)).index)
         elif method == "top_percent":
-            n = int(len(market_cap) * value)
+            n = max(1, int(len(market_cap) * value))
             passed = set(market_cap.head(n).index)
         elif method == "min_value":
             passed = set(market_cap[market_cap >= value].index)
@@ -269,7 +269,7 @@ class BaseIndex(ABC):
         if method == "top_n":
             passed = set(liquidity.head(int(value)).index)
         elif method == "top_percent":
-            n = int(len(liquidity) * value)
+            n = max(1, int(len(liquidity) * value))
             passed = set(liquidity.head(n).index)
         elif method == "min_value":
             passed = set(liquidity[liquidity >= value].index)
