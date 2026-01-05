@@ -1,0 +1,13 @@
+# Mac 系統檔
+.DS_Store
+
+# Python 快取
+__pycache__/
+*.pyc
+
+# Debug 檔案
+debug_*.py
+verify_*.py
+
+# 暫存檔
+~$*

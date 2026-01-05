@@ -10,6 +10,7 @@ from .momentum_index import MomentumIndexConfig, MomentumIndex
 from .size_index import SizeIndexConfig, SizeIndex
 from .dividend_index import DividendIndexConfig, DividendIndex
 from .low_vol_index import LowVolIndexConfig, LowVolIndex
+from .custom_index import CustomIndexConfig, CustomIndex
 
 __all__ = [
     'BaseIndexConfig', 'BaseIndex',
@@ -19,4 +20,5 @@ __all__ = [
     'SizeIndexConfig', 'SizeIndex',
     'DividendIndexConfig', 'DividendIndex',
     'LowVolIndexConfig', 'LowVolIndex',
+    'CustomIndexConfig', 'CustomIndex',
 ]

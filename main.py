@@ -24,7 +24,8 @@ from indices import (
     MomentumIndex,
     SizeIndex,
     DividendIndex,
-    LowVolIndex
+    LowVolIndex,
+    CustomIndex
 )
 
 
@@ -35,7 +36,8 @@ INDEX_MAP = {
     "MOMENTUM": MomentumIndex,
     "SIZE": SizeIndex,
     "DIVIDEND": DividendIndex,
-    "LOWVOL": LowVolIndex
+    "LOWVOL": LowVolIndex,
+    "CUSTOM": CustomIndex
 }
 
 
