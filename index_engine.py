@@ -669,13 +669,12 @@ class IndexEngine:
     
     def _calc_drifted_weights(self, date, prev_weights):
         """
-        計算權重漂移（使用用戶公式）
+        計算權重漂移
         
-        用戶公式：
-        - 除息股開盤權重 = 再投資前 × (1 + 組合股息報酬)
-        - 其他股開盤權重 = 收盤權重 × (1 + 組合股息報酬)
-        
-        只考慮現金股利再投資，不含股票股利
+        處理：
+        - 現金股利：分離現金後再投資
+        - 股票股利：調整股價（不影響權重）
+        - 股票分割：調整股價（不影響權重）
         
         Args:
             date: 當前日期
@@ -691,12 +690,19 @@ class IndexEngine:
         split_ratios = self.data_manager.get_split_ratio(date, stocks)
         split_ratios = split_ratios.reindex(stocks, fill_value=1)
         
+        # 取得股票股利並計算配股率
+        stock_dividends = self.data_manager.get_stock_dividend(date, stocks)
+        stock_dividends = stock_dividends.reindex(stocks).fillna(0)
+        # 配股率 = 股票股利 / 面額（預設 10 元）
+        stock_dividend_ratio = stock_dividends / 10
+        
         # 取得價格
         prices_today = self.data_manager.get_close_price(date, stocks).reindex(stocks)
         prices_yesterday = self.data_manager.get_close_price(prev_date, stocks).reindex(stocks)
         
-        # 調整後價格報酬（處理分割）
-        adjusted_prices_today = prices_today * split_ratios
+        # 調整後價格報酬（處理分割 + 股票股利）
+        # 今日股價 × 分割比例 × (1 + 配股率) vs 昨日股價
+        adjusted_prices_today = prices_today * split_ratios * (1 + stock_dividend_ratio)
         price_returns = (adjusted_prices_today - prices_yesterday) / prices_yesterday
         price_returns = price_returns.fillna(0)
         
@@ -708,10 +714,10 @@ class IndexEngine:
         # 計算組合的現金股息報酬（用於再投資）
         portfolio_cash_dividend_return = (prev_weights * cash_yields).sum()
         
-        # 用戶公式：
-        # 1. 先計算各股票的收盤價值（除息股要扣除殖利率）
+        # 權重漂移公式：
+        # 1. 收盤價值（除息股要扣除殖利率）
         #    closing_value = prev_weight × (1 + price_return - cash_yield)
-        # 2. 然後乘以 (1 + 組合現金股息報酬) 進行再投資
+        # 2. 現金股利再投資
         #    new_value = closing_value × (1 + portfolio_cash_dividend_return)
         
         closing_values = prev_weights * (1 + price_returns - cash_yields)
@@ -725,7 +731,6 @@ class IndexEngine:
             drifted = prev_weights
         
         return drifted
-    
     def _update_transition_data(self, date, old_weights):
         """
         記錄過渡期權重資料
